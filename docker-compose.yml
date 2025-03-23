@@ -1,0 +1,91 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+# Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Explicitly define listeners (critical fix)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Allow connections from outside Docker
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+
+#     # Kafka Connect (with PostgreSQL JDBC Connector)
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:latest
+    depends_on:
+      kafka:
+        condition: service_healthy 
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"  # Connect REST API
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    volumes:
+      - ./config/connect-standalone.properties:/etc/kafka-connect/connect-standalone.properties
+      - ./connectors/postgres-sink.properties:/etc/kafka-connect/postgres-sink.properties
+      - ./confluentinc-kafka-connect-jdbc-10.8.1/lib/:/usr/share/confluent-hub-components/confluentinc-kafka-connect-jdbc/lib/
+      - ./postgresql-42.7.5.jar:/usr/share/java/kafka-connect-jdbc/postgresql-42.7.5.jar
+    command: ["/usr/bin/connect-standalone", "/etc/kafka-connect/connect-standalone.properties", "/etc/kafka-connect/postgres-sink.properties"]    
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_PLUGIN_PATH: /usr/share/java/kafka-connect-jdbc
+      CLASSPATH: /usr/share/java/kafka-connect-jdbc/postgresql-42.7.5.jar
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+
+#   # PostgreSQL Database
+  postgres:
+    image: postgres:17
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    networks:
+      default:
+        aliases:
+          - postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: mydb
+    secrets:
+      - db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+
+volumes:
+  postgres_data:
