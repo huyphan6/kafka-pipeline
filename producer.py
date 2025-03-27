@@ -1,14 +1,16 @@
 from confluent_kafka import Producer
-from dotenv import load_dotenv
-import socket, time, json, requests, os
+import json, requests, logging, os
+from collections.abc import Callable
+from clean_data import clean
+from api.twilio_logs import fetch_twilio_logs_by_date_range
 
-def deliveryReport(err, msg):
+def delivery_report(err, msg):
     if err is not None:
         print(f"Delivery Failed for log {msg.key()} : {err}")
     else:
         print(f"Log Delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset}")
         
-def fetchLocalData():
+def fetch_local_data():
     try:
         with open("./data/logData.json") as f:
             logData = json.load(f)
@@ -18,25 +20,20 @@ def fetchLocalData():
         print(f"Failed to load logs from file: {e}")
         return []
     
-def fetchApiData():
+def fetch_api_data(api: Callable) -> list:
     try:
-        load_dotenv()
-        
-        url = os.getenv("LOGDATAENDPOINT")
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36'
-        }
-        data = {
-            "accountSid": os.getenv("ACCOUNTSID"),
-            "authToken": os.getenv("AUTHTOKEN"),
-            "dateRange": ["", ""]
-        }
-        
-        logData = requests.post(url, json=data, headers=headers)
-        return logData
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch logs from API: {e}")
-        return []
+        data = api()
+        return data
+    except requests.ConnectionError:
+        logging.error("Network error: Failed to connect to API.")
+    except requests.Timeout:
+        logging.error("Request timed out.")
+    except requests.HTTPError as e:
+        logging.error(f"HTTP error occurred: {e}")
+    except requests.RequestException as e:
+        logging.error(f"Failed to fetch logs from API: {e}")
+    
+    return None  # Return None instead of an empty list
 
 if __name__ == "__main__":
     # producer config
@@ -48,13 +45,15 @@ if __name__ == "__main__":
     # producer init
     producer = Producer(producer_config)
     
-    # fetch log data
-    # logData = fetchLocalData()
-    logData = []
+    # api injection to fetch log data
+    start_date, end_date = "12/31/24", "02/01/2025"
+    log_data = fetch_api_data(lambda: fetch_twilio_logs_by_date_range(start_date, end_date))
+    # clean
+    cleaned_logs = clean(log_data)
     
     # produce logs to kafka
     try: 
-        for log in logData:
+        for log in cleaned_logs:
             # Prepare the message with schema (for value) and a simple string key
             message = {
                 "schema": {
@@ -68,26 +67,14 @@ if __name__ == "__main__":
                         {"type": "string", "optional": True, "field": "dateUpdated"},
                         {"type": "string", "optional": True, "field": "price"},
                         {"type": "string", "optional": True, "field": "errorMessage"},
-                        {"type": "string", "optional": True, "field": "uri"},
-                        {"type": "string", "optional": True, "field": "accountSid"},
                         {"type": "string", "optional": True, "field": "numMedia"},
                         {"type": "string", "optional": True, "field": "status"},
                         {"type": "string", "optional": True, "field": "messagingServiceSid"},
-                        {"type": "string", "optional": True, "field": "sid"},
                         {"type": "string", "optional": True, "field": "dateSent"},
                         {"type": "string", "optional": True, "field": "dateCreated"},
                         {"type": "string", "optional": True, "field": "errorCode"},
                         {"type": "string", "optional": True, "field": "priceUnit"},
                         {"type": "string", "optional": True, "field": "apiVersion"},
-                        {
-                            "type": "struct",
-                            "optional": True,
-                            "field": "subresourceUris",
-                            "fields": [
-                                {"type": "string", "optional": True, "field": "feedback"},
-                                {"type": "string", "optional": True, "field": "media"}
-                            ]
-                        }
                     ],
                     "optional": False
                 },
