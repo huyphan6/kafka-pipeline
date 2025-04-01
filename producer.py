@@ -46,7 +46,7 @@ if __name__ == "__main__":
     producer = Producer(producer_config)
     
     # api injection to fetch log data
-    start_date, end_date = "12/31/24", "02/01/2025"
+    start_date, end_date = "02/31/24", "03/01/2024"
     log_data = fetch_api_data(lambda: fetch_twilio_logs_by_date_range(start_date, end_date))
     # clean
     cleaned_logs = clean(log_data)
